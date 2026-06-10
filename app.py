@@ -1,3 +1,4 @@
+import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response, status
 import uvicorn
@@ -45,8 +46,11 @@ async def health():
 
 @app.post("/invoke")
 async def invoke():
+    t0 = time.perf_counter()
     model = MODELS["model"]
     inference.run(model)
+    elapsed = time.perf_counter() - t0
+    print(f"[app.py] /invoke handler total: {elapsed:.4f} s", flush=True)
     return Response(status_code=status.HTTP_201_CREATED)
 
 

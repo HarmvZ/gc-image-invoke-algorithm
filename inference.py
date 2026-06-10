@@ -22,8 +22,22 @@ Happy programming!
 """
 
 import json
+import time
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
+
+import builtins
+_original_print = builtins.print
+
+
+def _timestamped_print(*args, **kwargs):
+    """Override print to prepend an ISO timestamp to every line."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    _original_print(f"[{timestamp}]", *args, **kwargs)
+
+
+builtins.print = _timestamped_print
 
 import numpy as np
 import SimpleITK
@@ -33,11 +47,59 @@ OUTPUT_PATH = Path("/output")
 RESOURCE_PATH = Path("resources")
 
 
+class Timer:
+    """Simple profiling timer that tracks named sections."""
+
+    def __init__(self):
+        self.records = []
+        self._start_time = None
+        self._section_name = None
+        self._total_start = None
+
+    def reset(self):
+        """Reset the timer for a new run."""
+        self.records = []
+        self._total_start = time.perf_counter()
+
+    def start(self, name: str):
+        if self._total_start is None:
+            self._total_start = time.perf_counter()
+        self._section_name = name
+        self._start_time = time.perf_counter()
+
+    def stop(self):
+        elapsed = time.perf_counter() - self._start_time
+        self.records.append((self._section_name, elapsed))
+        self._section_name = None
+        self._start_time = None
+
+    def print_results(self):
+        total_timed = sum(elapsed for _, elapsed in self.records)
+        total_wall = time.perf_counter() - self._total_start
+        unaccounted = total_wall - total_timed
+        print("\n" + "=" * 60, flush=True)
+        print("PROFILING RESULTS", flush=True)
+        print("=" * 60, flush=True)
+        for name, elapsed in self.records:
+            print(f"  {name:<40s} {elapsed:>8.4f} s", flush=True)
+        print("-" * 60, flush=True)
+        print(f"  {'Sum of timed sections':<40s} {total_timed:>8.4f} s", flush=True)
+        print(f"  {'Unaccounted (prints, overhead, etc.)':<40s} {unaccounted:>8.4f} s", flush=True)
+        print(f"  {'Total wall time (run)':<40s} {total_wall:>8.4f} s", flush=True)
+        print("=" * 60 + "\n", flush=True)
+
+
+timer = Timer()
+
+
 def run(model=None):
     """Run inference: read inputs, process, write outputs."""
+    timer.reset()
     try:
         # The key is a tuple of the slugs of the input sockets
+        timer.start("get_interface_key")
         interface_key = get_interface_key()
+        timer.stop()
 
         # Lookup the handler for this particular set of sockets (i.e. the interface)
         handler = {
@@ -45,7 +107,9 @@ def run(model=None):
         }[interface_key]
 
         # Call the handler
-        return handler()
+        result = handler()
+        timer.print_results()
+        return result
     except Exception:
         # Print any exception so it shows up in the container logs
         traceback.print_exc()
@@ -54,11 +118,15 @@ def run(model=None):
 
 def interf0_handler():
     # Determine the input image location from socket relative_path
+    timer.start("get_image_location")
     image_location = get_image_location("generic-medical-image")
+    timer.stop()
     print(f"Looking for input image in: {image_location}", flush=True)
 
     # Read the input image (an .mha region extracted via sample_mlab_image_region)
+    timer.start("load_image_file")
     input_image = load_image_file(location=image_location)
+    timer.stop()
 
     print(f"Input image dimension: {input_image.GetDimension()}", flush=True)
     print(f"Input image size: {input_image.GetSize()}", flush=True)
@@ -68,14 +136,18 @@ def interf0_handler():
     print(f"Input image num components: {input_image.GetNumberOfComponentsPerPixel()}", flush=True)
 
     # Generate a sphere overlay of ~1/4 the size of the input region
+    timer.start("create_sphere_overlay")
     output_image = create_sphere_overlay(input_image)
+    timer.stop()
 
     # Save your output
+    timer.start("write_image_file")
     output_location = OUTPUT_PATH / "images" / "generic-overlay"
     write_image_file(
         location=output_location,
         image=output_image,
     )
+    timer.stop()
 
     return 0
 
